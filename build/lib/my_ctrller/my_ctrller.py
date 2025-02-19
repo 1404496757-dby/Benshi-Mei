@@ -36,5 +36,5 @@ class MyController(Controller):
         self.state = self.init_state
 
 
-# ctrller = MyController(0)
-# simulate(controller=ctrller)
+ctrller = MyController(0)
+simulate(controller=ctrller)
