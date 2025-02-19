@@ -1,4 +1,4 @@
-from .user_interface import simulate
+# from .user_interface import simulate
 from .base import Controller, Action
 
 
@@ -36,5 +36,5 @@ class MyController(Controller):
         self.state = self.init_state
 
 
-ctrller = MyController(0)
-simulate(controller=ctrller)
+# ctrller = MyController(0)
+# simulate(controller=ctrller)

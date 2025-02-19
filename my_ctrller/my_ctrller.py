@@ -33,7 +33,8 @@ class MyController(Controller):
         '''
         Reset the controller state to inital state, must be implemented
         '''
-        self.state = self.init_state
+        # self.state = self.init_state
+        pass
 
 
 # ctrller = MyController(0)
