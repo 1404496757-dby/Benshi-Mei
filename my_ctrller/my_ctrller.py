@@ -1,4 +1,4 @@
-from .user_interface import simulate
+# from .user_interface import simulate
 from .base import Controller, Action
 
 
