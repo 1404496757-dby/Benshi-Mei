@@ -4,8 +4,9 @@ from .base import Controller, Action
 
 class MyController(Controller):
     def __init__(self, init_state):
-        self.init_state = init_state
-        self.state = init_state
+        self.init_state = None #init_state
+        # self.state = init_state
+        super().__init__(init_state)
 
     def policy(self, observation, reward, done, **info):
         '''
@@ -25,7 +26,7 @@ class MyController(Controller):
         action - a namedtuple defined at the beginning of this file. The
                  controller action contains two entries: basal, bolus
         '''
-        self.state = observation
+        # self.state = observation
         action = Action(basal=0, bolus=0)
         return action
 
