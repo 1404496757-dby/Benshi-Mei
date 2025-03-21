@@ -3,10 +3,10 @@ from .base import Controller, Action
 
 
 class MyController(Controller):
-    def __init__(self, init_state):
-        self.init_state = None #init_state
+    def __init__(self, insulin=0):
+        self.insulin = insulin #init_state
         # self.state = init_state
-        super().__init__(init_state)
+        # super().__init__(init_state)
 
     def policy(self, observation, reward, done, **info):
         '''
@@ -27,7 +27,7 @@ class MyController(Controller):
                  controller action contains two entries: basal, bolus
         '''
         # self.state = observation
-        action = Action(basal=0, bolus=0)
+        action = Action(basal=self.insulin, bolus=0)
         return action
 
     def reset(self):
