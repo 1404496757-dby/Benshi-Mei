@@ -30,6 +30,9 @@ class MyController(Controller):
         action = Action(basal=self.insulin, bolus=0)
         return action
 
+    def update_insulin(self,get_insulin):
+        self.insulin = get_insulin
+
     def reset(self):
         '''
         Reset the controller state to inital state, must be implemented
