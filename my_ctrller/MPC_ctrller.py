@@ -33,21 +33,23 @@ class NMPCController(Controller):
         # 状态估计缓存
         self.estimated_states = np.zeros(5)  # [U_S, I, Q, P_S, G]
 
-    def discretize_model(self, x, u, patient_params):
+    def discretize_model(self, x, u, params):
         """Mansell模型离散化（基于论文公式5-6）"""
         x_next = np.zeros_like(x)
-        k_x, n_t, n_T, n_C, k_1, k_2, P_c, V_p = (
-            patient_params['k_x'], patient_params['n_t'],
-            patient_params['n_T'], patient_params['n_C'],
-            patient_params['k_1'], patient_params['k_2'],
-            patient_params['P_c'], patient_params['V_p']
-        )
-        SI = patient_params['SI']  # 胰岛素敏感性
+        k_x = params.get('k_x', 0.05)
+        n_t = params.get('n_t', 0.08)
+        n_T = params.get('n_T', 0.1)
+        n_C = params.get('n_C', 0.2)
+        k_1 = params.get('k_1', 0.05)
+        k_2 = params.get('k_2', 0.1)
+        P_c = params.get('P_c', 0.01)
+        V_p = params.get('V_p', 0.12)
+        SI = params.get('SI', 1e-4)
 
         # 状态方程离散化
         x_next[0] = x[0] + (-k_x * x[0] + u)  # U_S
-        x_next[1] = x[1] + (k_x * x[0] - (n_t + n_T) * x[1] + n_t * x[2])  # I
-        x_next[2] = x[2] + (V_p * x[1] - (n_t + n_C) * x[2])  # Q
+        x_next[1] = x[1] + (k_x * x[0] - (n_t + n_T) * x[1] + n_t * x[2]) # I
+        x_next[2] = x[2] + (V_p * x[1] - (n_t + n_C)*x[2])
         x_next[3] = x[3] + (-k_1 * x[3] + k_2 * x[4])  # P_S
         x_next[4] = x[4] + (-SI * x[4] * x[2] + P_c * (x[3] - x[4]))  # G
         return x_next
@@ -87,26 +89,25 @@ class NMPCController(Controller):
         return Action(basal=basal, bolus=0.0)
 
     def _get_patient_params(self, name):
-        """从CSV文件加载患者特异性参数"""
+        """获取患者参数（兼容原始参数文件和Mansell模型参数）"""
+        params = {}
+
+        # 1. 从原始参数文件获取基础参数
         if any(self.patient_params.Name.str.match(name)):
-            params = self.patient_params[self.patient_params.Name.str.match(name)]
-            return {
-                'k_x': params.k_x.values[0],
-                'n_t': params.n_t.values[0],
-                'n_T': params.n_T.values[0],
-                'n_C': params.n_C.values[0],
-                'k_1': params.k_1.values[0],
-                'k_2': params.k_2.values[0],
-                'P_c': params.P_c.values[0],
-                'V_p': params.V_p.values[0],
-                'SI': params.SI.values[0]
-            }
-        else:
-            logger.warning(f"Patient {name} not found, using default parameters")
-            return {  # 默认参数
-                'k_x': 0.05, 'n_t': 0.08, 'n_T': 0.1, 'n_C': 0.2,
-                'k_1': 0.05, 'k_2': 0.1, 'P_c': 0.01, 'V_p': 0.12, 'SI': 1e-4
-            }
+            patient_data = self.patient_params[self.patient_params.Name.str.match(name)]
+            params.update({
+                'BW': patient_data.BW.values[0],
+                'u2ss': patient_data.u2ss.values[0],
+                # 添加其他原始参数...
+            })
+
+        # 2. 硬编码Mansell模型参数（实际应用时应从单独文件加载）
+        params.update({
+            'k_x': 0.05, 'n_t': 0.08, 'n_T': 0.1, 'n_C': 0.2,
+            'k_1': 0.05, 'k_2': 0.1, 'P_c': 0.01, 'V_p': 0.12, 'SI': 1e-4
+        })
+
+        return params
 
     def reset(self):
         """重置状态估计"""
