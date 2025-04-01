@@ -2,20 +2,6 @@ import numpy as np
 from collections import namedtuple
 from .base import Controller, Action
 
-
-class DataCloud:
-    def __init__(self, x, u):
-        self.focal_point = x  # Focal point is the most representative data point
-        self.mean = x  # Mean of the cloud
-        self.sigma = np.ones_like(x)  # Local scatter
-        self.radius = 1.0  # Approximate spread of the cloud
-        self.M = 1  # Number of samples in the cloud
-        self.Sigma = np.dot(x, x)  # Scalar product of data
-        self.u = u  # Control action associated with the cloud
-        self.P = 0.0  # Proportional gain for this clouimport numpy as np
-from collections import namedtuple
-from .base import Controller, Action
-
 class DataCloud:
     def __init__(self, x, u):
         self.focal_point = x  # Focal point is the most representative data point
