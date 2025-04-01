@@ -2,8 +2,10 @@ setup.py
 my_ctrller/MPC_ctrller.py
 my_ctrller/RECCo_ctrller.py
 my_ctrller/__init__.py
+my_ctrller/basal_bolus_ctrller.py
 my_ctrller/base.py
 my_ctrller/my_ctrller.py
+my_ctrller/pid_ctrller.py
 my_ctrller/user_interface.py
 my_ctrller.egg-info/PKG-INFO
 my_ctrller.egg-info/SOURCES.txt

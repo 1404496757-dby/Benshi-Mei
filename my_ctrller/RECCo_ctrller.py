@@ -1,270 +1,216 @@
+from .base import Controller
+from .base import Action
 import numpy as np
-from collections import namedtuple
-from typing import List, Dict, Tuple
+import pandas as pd
+import pkg_resources
+import logging
+from collections import deque
 
-# Define the Action namedtuple similar to the original controller
-Action = namedtuple('Action', ['basal', 'bolus'])
+logger = logging.getLogger(__name__)
+CONTROL_QUEST = pkg_resources.resource_filename('simglucose',
+                                                'params/Quest.csv')
+PATIENT_PARA_FILE = pkg_resources.resource_filename(
+    'simglucose', 'params/vpatient_params.csv')
 
-class RECCoController:
-    def __init__(self, bg_target=100.0, sample_time=1.0):
-        """
-        Initialize the RECCo controller with default parameters
-        
-        Parameters:
-        - bg_target: Target blood glucose level (mg/dl), default 100 mg/dl
-        - sample_time: Sampling time in minutes, default 1 minute
-        """
-        # Target blood glucose level
-        self.bg_target = bg_target
-        
-        # Sampling time
-        self.sample_time = sample_time
-        
-        # Controller parameters from Table 7 in the paper
-        self.u_min = 0       # Minimum insulin dose (mU/L)
-        self.u_max = 100     # Maximum insulin dose (mU/L)
-        self.y_min = 20      # Minimum BG value (mg/dl)
-        self.y_max = 70      # Maximum BG value (mg/dl)
-        self.time_constant = 40  # Time constant for reference model
-        
+
+class RECCoController(Controller):
+    """
+    Robust Evolving Cloud-based Controller for Type 1 Diabetes Management.
+    Implements the ANYA fuzzy rule-based system as described in the research paper.
+    """
+
+    def __init__(self, target=100):
+        self.quest = pd.read_csv(CONTROL_QUEST)
+        self.patient_params = pd.read_csv(PATIENT_PARA_FILE)
+        self.target = target  # Target blood glucose level (100 mg/dl)
+
+        # Initialize RECCo parameters
+        self.u_min = 0
+        self.u_max = 100
+        self.y_min = 20
+        self.y_max = 70
+        self.Ts = 2  # Sampling time (minutes)
+        self.tau = 40  # Time constant
+
         # Evolving parameters
         self.gamma_max = 0.93
         self.k_add = 1
         self.n_add = 20
-        self.C = 0           # Current number of clouds
-        self.C_max = 20      # Maximum number of clouds
-        
+        self.C = 0  # Current number of clouds
+        self.C_max = 20  # Maximum number of clouds
+
         # Adaptation parameters
-        self.G_sign = 1      # Sign of process gain
-        self.alpha_p = 0.1   # Proportional adaptation gain
-        self.alpha_i = 0.1   # Integral adaptation gain
-        self.alpha_d = 0.1   # Derivative adaptation gain
-        self.alpha_r = 0.1   # Operating point adaptation gain
-        
-        # Data clouds storage
-        self.clouds = []     # List to store cloud parameters
-        self.data_points = [] # List to store historical data points
-        
-        # Tracking error variables
-        self.error_integral = 0
-        self.prev_error = 0
-        
-        # PID parameters for each cloud
-        self.P = []          # Proportional gains
-        self.I = []          # Integral gains
-        self.D = []          # Derivative gains
-        self.R = []          # Operating point compensations
-        
-    def policy(self, observation, reward, done, **info):
+        self.G_sign = 1
+        self.alpha_p = 0.1
+        self.alpha_i = 0.1
+        self.alpha_d = 0.1
+        self.alpha_r = 0.1
+
+        # Data storage for evolving clouds
+        self.clouds = []
+        self.error_history = deque(maxlen=10)
+        self.control_history = deque(maxlen=10)
+
+        # Initialize first cloud when first data arrives
+        self.initialized = False
+
+    def policy(self, observation, reward, done, **kwargs):
+        sample_time = kwargs.get('sample_time', 1)
+        pname = kwargs.get('patient_name')
+        meal = kwargs.get('meal')  # unit: g/min
+        exercise = kwargs.get('exercise', 0)  # Exercise factor (0-1)
+        stress = kwargs.get('stress', 0)  # Stress factor (0-1)
+        fatigue = kwargs.get('fatigue', 0)  # Fatigue factor (0-1)
+
+        # Get current glucose level
+        current_glucose = observation.CGM
+
+        # Calculate control action using RECCo algorithm
+        action = self._recco_policy(pname, current_glucose, meal, exercise,
+                                    stress, fatigue, sample_time)
+
+        return action
+
+    def _recco_policy(self, name, glucose, meal, exercise, stress, fatigue, env_sample_time):
         """
-        Main control policy that calculates insulin dose based on current BG
-        
-        Parameters:
-        - observation: Current BG measurement
-        - reward: Current reward (not used here)
-        - done: Flag indicating episode end (not used here)
-        - info: Additional information (patient_name, sample_time)
-        
-        Returns:
-        - action: Namedtuple containing basal and bolus insulin doses
+        RECCo control algorithm implementation based on the paper.
         """
-        # Get current BG measurement
-        bg = observation.CGM
-        
-        # Calculate tracking error
-        error = self.bg_target - bg
-        
-        # Update integral and derivative terms
-        error_derivative = error - self.prev_error
-        self.error_integral += error
-        
-        # Normalize inputs for evolving law
-        delta_y = self.y_max - self.y_min
-        delta_e = delta_y / 2
-        normalized_error = error / delta_e
-        normalized_bg = (bg - self.y_min) / delta_y
-        
-        # Create current data point
-        current_point = np.array([normalized_error, normalized_bg])
-        
-        # Update data clouds
-        self._update_clouds(current_point)
-        
-        # Calculate control signal
-        insulin_dose = self._calculate_control_signal(error, error_derivative)
-        
-        # Store previous error
-        self.prev_error = error
-        
-        # Return action (only basal for now, bolus=0)
-        return Action(basal=insulin_dose, bolus=0)
-    
-    def _update_clouds(self, current_point):
-        """
-        Update the data clouds based on the current data point
-        
-        Parameters:
-        - current_point: Current normalized data point [error, bg]
-        """
-        if self.C == 0:
+        # 1. Reference Model
+        y_r = self._reference_model(glucose)
+
+        # 2. Calculate tracking error
+        error = y_r - glucose
+        delta_error = error - (self.error_history[-1] if len(self.error_history) > 0 else 0)
+
+        # Store current error
+        self.error_history.append(error)
+
+        # 3. Normalize inputs for evolving system
+        x = np.array([
+            error / ((self.y_max - self.y_min) / 2),
+            (glucose - self.y_min) / (self.y_max - self.y_min)
+        ])
+
+        # 4. Evolving Law - Cloud management
+        if not self.initialized:
             # Initialize first cloud
-            self._add_cloud(current_point)
+            self._add_cloud(x)
+            self.initialized = True
         else:
-            # Calculate membership values for existing clouds
-            gamma_values = []
-            for i in range(self.C):
-                cloud = self.clouds[i]
-                mu_i = cloud['mu']
-                sigma_i = cloud['sigma']
-                
-                # Calculate local density (equation from Table 5)
-                numerator = 1
-                denominator = 1 + np.linalg.norm(current_point - mu_i)**2 + sigma_i - np.linalg.norm(mu_i)**2
-                gamma_i = numerator / denominator
-                gamma_values.append(gamma_i)
-            
-            # Check if we need to add a new cloud
-            max_gamma = max(gamma_values) if gamma_values else 0
-            if max_gamma < self.gamma_max and len(self.data_points) > (self.k_add + self.n_add):
-                self._add_cloud(current_point)
+            # Calculate membership to existing clouds
+            gamma_values = [self._calculate_local_density(x, cloud) for cloud in self.clouds]
+            max_gamma = max(gamma_values) if self.clouds else 0
+
+            # Add new cloud if conditions met
+            if max_gamma < self.gamma_max and len(self.error_history) > self.n_add:
+                self._add_cloud(x)
+
+        # 5. Adaptation Law - PID-R type controller
+        u_total = 0
+        sum_gamma = 0
+
+        for i, cloud in enumerate(self.clouds):
+            # Calculate local density for this cloud
+            gamma = self._calculate_local_density(x, cloud)
+
+            # Calculate normalized relative density
+            lambda_i = gamma / sum([self._calculate_local_density(x, c) for c in self.clouds])
+
+            # Calculate PID-R components for this cloud
+            P = cloud['P'] * error
+            I = cloud['I'] * sum(self.error_history)
+            D = cloud['D'] * delta_error
+            R = cloud['R']
+
+            # Calculate local control action
+            u_i = P + I + D + R
+
+            # Update adaptation parameters
+            delta_P = self.alpha_p * self.G_sign * lambda_i * abs(error * error) / (1 + error ** 2)
+            delta_I = self.alpha_i * self.G_sign * lambda_i * abs(error * delta_error) / (1 + error ** 2)
+            delta_D = self.alpha_d * self.G_sign * lambda_i * abs(error * delta_error) / (1 + error ** 2)
+            delta_R = self.alpha_r * self.G_sign * lambda_i * abs(error) / (1 + error ** 2)
+
+            # Update cloud parameters with instability protection
+            cloud['P'] = self._parameter_projection(cloud['P'] + delta_P)
+            cloud['I'] = self._parameter_projection(cloud['I'] + delta_I)
+            cloud['D'] = self._parameter_projection(cloud['D'] + delta_D)
+            cloud['R'] = self._parameter_projection(cloud['R'] + delta_R)
+
+            # Add to total control action
+            u_total += lambda_i * u_i
+            sum_gamma += gamma
+
+        # Apply saturation to control action
+        u_total = np.clip(u_total, self.u_min, self.u_max)
+
+        # Convert to insulin rate (U/min)
+        insulin_rate = u_total / env_sample_time
+
+        # Apply meal bolus if needed (combining RECCo with meal response)
+        if meal > 0:
+            if any(self.quest.Name.str.match(name)):
+                quest = self.quest[self.quest.Name.str.match(name)]
+                bolus = (meal * env_sample_time) / quest.CR.values.item()
             else:
-                # Associate with closest cloud
-                closest_idx = np.argmax(gamma_values)
-                self._update_cloud_parameters(closest_idx, current_point)
-    
-    def _add_cloud(self, point):
+                bolus = (meal * env_sample_time) / 15  # Default CR
+
+            bolus = bolus / env_sample_time  # Convert to U/min
+            insulin_rate += bolus
+
+        # Adjust for exercise, stress, fatigue factors
+        insulin_rate *= (1 - 0.3 * exercise)  # Reduce insulin during exercise
+        insulin_rate *= (1 + 0.2 * stress)  # Increase insulin during stress
+        insulin_rate *= (1 - 0.1 * fatigue)  # Reduce insulin when fatigued
+
+        # Store control action
+        self.control_history.append(insulin_rate)
+
+        return Action(basal=insulin_rate, bolus=0)  # RECCo handles both as single control
+
+    def _reference_model(self, y):
         """
-        Add a new data cloud
-        
-        Parameters:
-        - point: Data point to initialize the new cloud
+        First-order linear reference model.
+        """
+        a_r1 = 1 - self.Ts / self.tau
+        return a_r1 * y + (1 - a_r1) * self.target
+
+    def _add_cloud(self, x):
+        """
+        Add a new data cloud to the evolving system.
         """
         if self.C >= self.C_max:
-            return  # Don't exceed maximum number of clouds
-            
+            # Remove oldest cloud if at maximum
+            self.clouds.pop(0)
+
         new_cloud = {
-            'mu': point,                   # Mean
-            'sigma': np.linalg.norm(point)**2,  # Variance
-            'M': 1                         # Number of points in cloud
+            'mean': x,
+            'sigma': np.linalg.norm(x) ** 2,
+            'P': 0.5,  # Initial proportional gain
+            'I': 0.1,  # Initial integral gain
+            'D': 0.05,  # Initial derivative gain
+            'R': 0  # Initial operating point compensation
         }
-        
         self.clouds.append(new_cloud)
         self.C += 1
-        
-        # Initialize PID parameters for this cloud
-        self.P.append(0.5)  # Initial proportional gain
-        self.I.append(0.1)  # Initial integral gain
-        self.D.append(0.1)  # Initial derivative gain
-        self.R.append(0)    # Initial operating point compensation
-    
-    def _update_cloud_parameters(self, cloud_idx, point):
+
+    def _calculate_local_density(self, x, cloud):
         """
-        Update parameters of an existing cloud
-        
-        Parameters:
-        - cloud_idx: Index of the cloud to update
-        - point: New data point to incorporate
+        Calculate local density of point x relative to a cloud.
         """
-        cloud = self.clouds[cloud_idx]
-        M = cloud['M']
-        
-        # Update mean (equation from Table 5)
-        new_mu = ((M - 1) / M) * cloud['mu'] + (1 / M) * point
-        cloud['mu'] = new_mu
-        
-        # Update variance (equation from Table 5)
-        new_sigma = ((M - 1) / M) * cloud['sigma'] + (1 / M) * np.linalg.norm(point)**2
-        cloud['sigma'] = new_sigma
-        
-        # Update count
-        cloud['M'] += 1
-    
-    def _calculate_control_signal(self, error, error_derivative):
+        return 1 / (1 + np.linalg.norm(x - cloud['mean']) ** 2 + cloud['sigma'] - np.linalg.norm(cloud['mean']) ** 2)
+
+    def _parameter_projection(self, param):
         """
-        Calculate the control signal (insulin dose) using the RECCo algorithm
-        
-        Parameters:
-        - error: Current tracking error
-        - error_derivative: Derivative of tracking error
-        
-        Returns:
-        - insulin_dose: Calculated insulin dose
+        Project parameter to valid range to prevent instability.
         """
-        if self.C == 0:
-            return 0  # No clouds yet, return zero dose
-            
-        # Calculate relative densities for all clouds
-        gamma_values = []
-        for i in range(self.C):
-            cloud = self.clouds[i]
-            mu_i = cloud['mu']
-            sigma_i = cloud['sigma']
-            
-            numerator = 1
-            denominator = 1 + np.linalg.norm(np.array([error, self.prev_error]) - mu_i)**2 + sigma_i - np.linalg.norm(mu_i)**2
-            gamma_i = numerator / denominator
-            gamma_values.append(gamma_i)
-        
-        total_gamma = sum(gamma_values)
-        lambda_values = [gamma / total_gamma for gamma in gamma_values]
-        
-        # Calculate local control signals for each cloud
-        u_local = []
-        for i in range(self.C):
-            # PID-R control law (equation 34)
-            u_i = (self.P[i] * error + 
-                   self.I[i] * self.error_integral + 
-                   self.D[i] * error_derivative + 
-                   self.R[i])
-            u_local.append(u_i)
-        
-        # Calculate weighted average control signal
-        insulin_dose = sum(lambda_values[i] * u_local[i] for i in range(self.C))
-        
-        # Apply saturation
-        insulin_dose = np.clip(insulin_dose, self.u_min, self.u_max)
-        
-        # Update adaptation parameters
-        self._update_adaptation_parameters(error, error_derivative, lambda_values)
-        
-        return insulin_dose
-    
-    def _update_adaptation_parameters(self, error, error_derivative, lambda_values):
-        """
-        Update the adaptation parameters for each cloud
-        
-        Parameters:
-        - error: Current tracking error
-        - error_derivative: Derivative of tracking error
-        - lambda_values: Relative densities for each cloud
-        """
-        for i in range(self.C):
-            # Calculate adaptation terms (equations 37)
-            delta_P = (self.alpha_p * self.G_sign * lambda_values[i] * 
-                      abs(error * self.error_integral) / (1 + error**2))
-            delta_I = (self.alpha_i * self.G_sign * lambda_values[i] * 
-                      abs(error * error_derivative) / (1 + error**2))
-            delta_D = (self.alpha_d * self.G_sign * lambda_values[i] * 
-                      abs(error * error_derivative) / (1 + error**2))
-            delta_R = (self.alpha_r * self.G_sign * lambda_values[i] * 
-                      abs(error) / (1 + error**2))
-            
-            # Apply parameter projection (from Table 6)
-            self.P[i] = np.clip(self.P[i] + delta_P, 0, None)
-            self.I[i] = np.clip(self.I[i] + delta_I, 0, None)
-            self.D[i] = np.clip(self.D[i] + delta_D, 0, None)
-            self.R[i] += delta_R
-    
+        # Simple projection - can be enhanced based on Table 6 in the paper
+        return np.clip(param, -10, 10)
+
     def reset(self):
-        """
-        Reset the controller to initial state
-        """
+        """Reset the controller state"""
         self.clouds = []
-        self.data_points = []
+        self.error_history.clear()
+        self.control_history.clear()
         self.C = 0
-        self.P = []
-        self.I = []
-        self.D = []
-        self.R = []
-        self.error_integral = 0
-        self.prev_error = 0
+        self.initialized = False
