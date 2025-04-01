@@ -10,7 +10,7 @@ class NMPCController(Controller):
                  insulin_max=5.0,
                  alpha=1.0,
                  beta=0.1):
-        super().__init__()
+        # super().__init__()
         # 控制器参数
         self.N = prediction_horizon  # 预测步长（分钟）
         self.G_target = glucose_target  # 血糖目标值 (mg/dL)
