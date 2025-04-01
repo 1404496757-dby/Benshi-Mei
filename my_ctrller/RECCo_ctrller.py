@@ -63,7 +63,8 @@ class RECCoController(Controller):
         fatigue = kwargs.get('fatigue', 0)  # Fatigue factor (0-1)
 
         # Get current glucose level
-        current_glucose = observation.CGM
+        # current_glucose = observation.CGM
+        current_glucose = kwargs['bg']
 
         # Calculate control action using RECCo algorithm
         action = self._recco_policy(pname, current_glucose, meal, exercise,
