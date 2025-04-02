@@ -7,10 +7,10 @@ import logging
 from collections import deque
 
 logger = logging.getLogger(__name__)
-CONTROL_QUEST = pkg_resources.resource_filename('simglucose',
-                                                'params/Quest.csv')
-PATIENT_PARA_FILE = pkg_resources.resource_filename(
-    'simglucose', 'params/vpatient_params.csv')
+# CONTROL_QUEST = pkg_resources.resource_filename('simglucose',
+#                                                 'params/Quest.csv')
+# PATIENT_PARA_FILE = pkg_resources.resource_filename(
+#     'simglucose', 'params/vpatient_params.csv')
 
 
 class RECCoController(Controller):
@@ -63,8 +63,8 @@ class RECCoController(Controller):
         fatigue = kwargs.get('fatigue', 0)  # Fatigue factor (0-1)
 
         # Get current glucose level
-        # current_glucose = observation.CGM
-        current_glucose = kwargs['bg']
+        current_glucose = observation.CGM
+        # current_glucose = kwargs['bg']
 
         # Calculate control action using RECCo algorithm
         action = self._recco_policy(pname, current_glucose, meal, exercise,
